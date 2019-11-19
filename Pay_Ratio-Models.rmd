@@ -1,0 +1,250 @@
+---
+title: "Meeting 11/13"
+output:
+  pdf_document: default
+  word_document: default
+---
+
+```{r setup, include=FALSE, echo=FALSE, include = F}
+library(tidyverse)
+library(mice)
+library(broom)
+library(GGally)
+library(MASS)
+library(car)
+library(readxl)
+library(ggridges)
+library(beeswarm)
+```
+
+# 2018
+
+```{r, include=FALSE, echo=F}
+response18 <- read_xlsx("~/Documents/Pay Ratio/2018 Hand Collect Data.xlsx", sheet = "Clean")
+
+covar18 <- read.csv("~/Documents/Pay Ratio/2018 Covariates.csv") %>%
+  mutate(cik = as.numeric(as.character(cik)),
+         board_avg_tenure = as.numeric(as.character(board_avg_tenure)),
+         board_size = as.numeric(as.character(board_size)),
+         governance = as.numeric(as.character(governance)),
+         ceo_age = as.numeric(as.character(ceo_age)),
+         ceo_tenure = as.numeric(as.character(ceo_tenure)),
+         ev = as.numeric(as.character(ev)),
+         roa = as.numeric(as.character(roa)),
+         tobin = as.numeric(as.character(tobin)),
+         dta = as.numeric(as.character(dta)),
+         rd = as.numeric(as.character(rd)),
+         sales_g = as.numeric(as.character(sales_g)),
+         cfo = as.numeric(as.character(cfo))) %>%
+  dplyr::select(-name, -ticker) %>%
+  distinct() %>%
+  as.tibble()
+
+char2num <- function(x) {return(as.numeric(as.character(x)))}
+
+new_covars <- read_xlsx("~/Documents/Pay Ratio/Covariates.xlsx", 
+                        sheet = "New Values") %>%
+  map(char2num) %>%
+  as.tibble() %>%
+  dplyr::select(-ticker, -name) %>%
+  distinct(cik, .keep_all = T)
+
+head(new_covars)
+
+df18 <- left_join(response18, covar18, by = 'cik') %>%
+  as.tibble()
+
+df18_n <- left_join(df18, new_covars, by = "cik")
+```
+
+
+```{r Exploratory Data Analysis, echo = F, include = F}
+# Plots of summarized data
+plotter <- df18 %>% 
+  dplyr::group_by(sector) %>%
+  filter(!is.na(sector)) %>%
+  summarize(median_avg = mean(median), ceo_avg = mean(ceo), ratio_avg = mean(ratio))
+
+#scatterplot3d(x = plotter$median_avg, y = plotter$ceo_avg, z = plotter$ratio_avg, color = as.numeric(plotter$sector))
+
+ggplot(plotter, aes(x = median_avg, y = ceo_avg, col = sector)) + 
+  geom_point()
+ggplot(plotter, aes(x = median_avg, y = ratio_avg, col = sector)) + 
+  geom_point()
+
+# EDA
+df18 %>%
+  dplyr::select(ceo, median, ratio, sector) %>%
+  filter(!is.na(sector)) %>%
+  group_by(sector) %>%
+  summarise_all(list(median, sd))
+
+df18 %>% 
+  drop_na() %>%
+  mutate(lnratio = log(ratio)) %>%
+  dplyr::select(lnratio, tobin, cfo, governance, board_size, board_avg_tenure) %>%
+  ggpairs()
+
+```
+
+## Complexity
+
+```{r}
+squares <- function(x){
+  return(sum(x^2)/ sum(x)^2)
+}
+
+comp <- read.csv("~/Documents/Pay Ratio/complexity.csv") %>%
+  mutate(year = ifelse(str_starts(as.character(srcdate), "2017"), 2017, 2018),
+         stype = factor(stype))
+
+comp2 <- comp %>%
+  group_by(cik, year, stype) %>%
+  filter(sales > 0) %>%
+  summarize(metric = squares(sales)) %>%
+  spread(key = stype, value = metric)
+
+comp18 <- comp2 %>%
+  filter(year == 2017) %>%
+  dplyr::select(-year)
+
+comp19 <- comp2 %>%
+  filter(year == 2018) %>%
+  dplyr::select(-year)
+
+df18_n <- left_join(df18_n, comp18, by = "cik")
+```
+
+```{r include=FALSE, echo=F}
+md.pattern(df18_n, rotate.names = T)
+```
+
+## Full Model
+
+```{r}
+df18_n$rd[is.na(df18_n$rd)] <- 0
+
+reg_df18 <- df18_n %>%
+  dplyr::select(-cik, -median, -ceo, -check, -num_employees18, -OPSEG, -year) %>%
+  mutate(lnratio = log(ratio)) %>%
+  drop_na()
+
+# Building a new regression model
+model18.1 <- lm(lnratio ~ . -ratio -beta18 -ret18, reg_df18)
+summary(model18.1)
+```
+
+# Stepwise model
+
+```{r}
+# Stepwise Model
+step_model18 <- stepAIC(model18.1, direction = 'backward', trace = F)
+summary(step_model18)
+
+vif(step_model18)
+```
+
+# 2019
+
+```{r, echo=F, include=F}
+response19 <- read_xlsx("~/Downloads/Data-selected/2019 Hand Collect Data.xlsx",
+                       sheet = "Clean")
+
+covar19 <- read.csv("~/Downloads/Data-selected/2019 Covariates.csv") %>%
+  rename(governance18 = X2018_governance) %>%
+  mutate(cik = as.numeric(as.character(cik)),
+         board_avg_tenure = as.numeric(as.character(board_avg_tenure)),
+         board_size = as.numeric(as.character(board_size)),
+         governance = as.numeric(as.character(governance)),
+         governance18 = as.numeric(as.character(governance18)),
+         ceo_age = as.numeric(as.character(ceo_age)),
+         ceo_tenure = as.numeric(as.character(ceo_tenure)),
+         ev = as.numeric(as.character(ev)),
+         roa = as.numeric(as.character(roa)),
+         tobin = as.numeric(as.character(tobin)),
+         dta = as.numeric(as.character(dta)),
+         rd = as.numeric(as.character(rd)),
+         sales_g = as.numeric(as.character(sales_g)),
+         cfo = as.numeric(as.character(cfo))) %>%
+  dplyr::select(-name, -ticker) %>%
+  as.tibble() %>%
+  distinct(cik, .keep_all = T)
+
+df19 <- left_join(response19, covar19, by = 'cik') %>%
+  as.tibble()
+
+df19_n <- left_join(df19, new_covars, by = "cik")
+```
+
+## Full Model
+
+```{r}
+reg_df19 <- df19_n %>%
+  dplyr::select(-cik, -median, -ceo, -check, -governance, 
+                -num_employees18, -num_employees17) %>%
+  mutate(lnratio = log(ratio))
+
+reg_df19$rd[is.na(reg_df19$rd)] <- 0
+#md.pattern(reg_df19, rotate.names = T)
+
+reg_df19 <- drop_na(reg_df19) %>%
+  filter(lnratio != -Inf)
+
+# Building a new regression model
+model19.1 <- lm(lnratio ~ . -ratio, reg_df19)
+summary(model19.1)
+```
+
+## Stepwise Model
+
+```{r}
+# Stepwise Model
+step_model19 <- stepAIC(model19.1, direction = 'backward', trace = F)
+
+summary(step_model19)
+
+vif(step_model19)
+```
+
+# Plots
+
+```{r}
+summary_df <- rbind(df18[,1:6], df19[,1:6])
+
+table_n <- summary_df %>%
+  group_by(sector) %>%
+  summarize(n(),mean = mean(ratio), sd = sd(ratio), median = median(ratio),
+            min = min(ratio), max = max(ratio))
+
+#write.csv(table_n, "~/Documents/table.csv")
+```
+
+## Violin Plot
+```{r}
+# Violin
+summary_df %>%
+  filter(!is.na(sector)) %>%
+  ggplot(aes(x = 1, y = log(ratio))) + 
+  geom_violin() + 
+  facet_wrap(. ~ sector)
+```
+
+## Ridgeline Plot
+```{r}
+# Ridgeline
+summary_df %>%
+  filter(ratio < 800, !is.na(sector)) %>%
+  ggplot(aes(x = ratio, y = sector)) +
+  geom_density_ridges() +
+  geom_rug(alpha = 0.3)
+```
+
+## Ridgeline Plot with a log-scale
+```{r}
+## Log scale
+summary_df %>%
+  filter(!is.na(sector)) %>%
+  ggplot(aes(x = log(ratio), y = sector)) +
+  geom_density_ridges() +
+  geom_rug(alpha = 0.1)
+```

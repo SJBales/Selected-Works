@@ -1,0 +1,591 @@
+---
+title: "Midterm Project"
+author: "Sam Bales"
+date: "10/16/2019"
+output: pdf_document
+---
+
+```{r Packages, echo=F, warning=F, message=F}
+# Loading Packages
+library(MASS)
+library(tidyverse)
+library(GGally)
+library(tidyimpute)
+library(broom)
+library(caret)
+library(glmnet)
+library(reshape2)
+library(class)
+library(e1071)
+library(nnet)
+```
+
+```{r Data Import}
+# Reading Data
+train1 <- read.csv("~/Documents/624/Midterm project/train_reg_features.csv")
+test1_features <- read.csv("~/Documents/624/Midterm project/test_reg_features.csv")
+test_target <- read.csv("~/Documents/624/Midterm project/response_id.csv")
+```
+
+#Exploratory Data Analsis
+
+```{r Structure}
+# Examining Dataset structure
+head(train1)
+tail(train1)
+head(test1_features)
+dim(train1)
+dim(test1_features)
+str(train1)
+
+# Exploration
+summary(train1)
+```
+
+Looking at the summary of the data, there are several columns with missing data. After consulting the data description file, many of these missing values indicate the house did not have the attribute measured by the feature. If this is not corrected, R will exclude the observations from the dataset when fitting the model, which will substantially decrease the sample size. I am going to create new factor levels based on the data description to indicate the absence of features. These factors will be releveled to embed the absence of an attribute in the intercept of the regression equation.
+
+```{r Releveling Factors}
+fct.relevel <- function(x){
+  x = relevel(fct_explicit_na(x, "None"), "None")
+}
+
+# Fixing factor levels
+train1_rl <- train1 %>%
+  mutate(MSSubClass = factor(MSSubClass),
+         Alley = fct.relevel(Alley),
+         BsmtQual = fct.relevel(BsmtQual),
+         BsmtCond = fct.relevel(BsmtCond),
+         BsmtExposure = fct.relevel(BsmtExposure),
+         BsmtFinType1 = fct.relevel(BsmtFinType1),
+         BsmtFinType2 = fct.relevel(BsmtFinType2),
+         FireplaceQu = fct.relevel(FireplaceQu),
+         GarageType = fct.relevel(GarageType),
+         GarageFinish = fct.relevel(GarageFinish),
+         GarageCond = fct.relevel(GarageCond),
+         GarageQual = fct.relevel(GarageQual),
+         PoolQC = fct.relevel(PoolQC),
+         Fence = fct.relevel(Fence),
+         MiscFeature = fct.relevel(MiscFeature)) %>%
+  dplyr::select(-Id)
+
+summary(train1_rl)
+str(train1_rl)
+
+train1_rl %>%
+  dplyr::select(LotFrontage) %>%
+  filter_all(any_vars(is.na(.))) %>%
+  summarize(n())
+
+train1_rl %>%
+  group_by(MSSubClass) %>%
+  summarize(sum(is.na(LotFrontage)))
+```
+
+Looking at the summary above, LotFrontage has several missing values. It does not appear NA's represent the absence of Lot Frontage, so NA's can't be replaced with 0's. There are several approaches to deal with this, but I am going to employ median imputation for its simplicity and robust qualities. 
+
+```{r Imputation}
+train1_rl <- train1_rl %>%
+  mutate(LotFrontage = ifelse(is.na(LotFrontage), median(LotFrontage, na.rm = T), LotFrontage))
+
+summary(train1_rl$LotFrontage)
+```
+
+## Gaphical and Numerical Analysis
+
+```{r}
+#Plotting Continuous Data
+select_cont_df <- train1_rl %>%
+  dplyr::select(LotFrontage, LotArea, YearBuilt, YearRemodAdd, 
+         GrLivArea, GarageArea, SalePrice)
+
+ggpairs(select_cont_df)
+
+select_cont_df2 <- train1_rl %>%
+  dplyr::select(X1stFlrSF, X2ndFlrSF, TotalBsmtSF, GrLivArea, SalePrice)
+
+ggpairs(select_cont_df2)
+
+# Plotting Discrete Data
+par(mfrow = c(3,2))
+barplot(table(train1_rl$RoofStyle), main = "Roof Style")
+barplot(table(train1_rl$Foundation), main = "Foundation")
+barplot(table(train1_rl$BsmtFinType1), main = "Basement Type")
+barplot(table(train1_rl$Heating), main = "Heating")
+barplot(table(train1_rl$ExterCond), main = "Exterior Condition")
+barplot(table(train1_rl$RoofStyle), main = "Roof Style")
+
+## Second Round
+par(mfrow = c(3,2))
+barplot(table(train1_rl$BldgType), main = "Type")
+barplot(table(train1_rl$Utilities), main = "Utilities")
+barplot(table(train1_rl$MSSubClass), main = "Sub Class")
+barplot(table(train1_rl$GarageQual), main = "Garage Quality")
+barplot(table(train1_rl$SaleType), main = "Sale Type")
+barplot(table(train1_rl$KitchenQual), main = "Kitchen Quality")
+```
+
+There are a few points that stand out to me from the EDA. First, some of the predictors are highly collinear. Collinearity isn't a significant issue for prediction purposes, but will disrupt interpretation of the coefficients after the model is built. Secondly, the histograms in the ggpairs plots suggest some of the predictors could benefit from transformations. In the Ames paper, the author suggested a square-root transformation on sale price to improve accuracy. I will explore transformations of the predictors later. Lastly, some of the categorical variables have levels with few observations. I may compress some of the factors in the model building phase if the levels are insignificant. Many categorical variables also poses issues for degrees of freedom, but that is not a main concern here since our objective is not inference.
+
+## Modeling
+
+```{r}
+# Creating a dataframe for regression
+train1.1 <- train1_rl %>%
+  mutate(lprice = log(SalePrice)) %>%
+  dplyr::select(-SalePrice)
+
+hist(train1.1$lprice, main = "Log Price")
+
+## First Model
+model1.1 <- lm(lprice ~., data = train1.1)
+summary(model1.1)
+
+tidy1.1 <- tidy(model1.1)
+```
+
+Most of the variables in this model are factors, which will make subset selection techniques hard to use. Additionally, the data are highly collinear, and the predictor space is high dimensional. Because of this, shrinkage techniques will perform well on this problem. Thus, I am going to compare the efficacy of Lasso and Ridge regression. I will use the caret package to perform cross-validation to select the best model and tune hyperparameters.
+
+## Shrinkage Methods
+
+In this first code chunk, I am going to use cross-validation to determine a good starting value for lambda for lasso and ridge regression.
+
+```{r}
+set.seed(123)
+
+# Reformatting Data
+train1.2 <- train1.1 %>% drop_na()
+X <- model.matrix(model1.1)[,-1]
+Y <- train1.2 %>%
+  dplyr::select(lprice) %>% 
+  as.matrix()
+
+# Determining starting values for lambda
+cv.glmnet(X, Y, alpha = 1)$lambda.min # Lasso
+cv.glmnet(X, Y, alpha = 0)$lambda.min # Ridge
+```
+
+### Lasso
+I am using 10 fold cross-validation to tune the hyperparameter lambda. This tuning process performs the variable selection--selecting the correct value of lambda will "turn off" some of the coefficients and leave us with a sparse model. The caret::train performs this through a grid-search prcedure and cross-validation. For each potential value in the grid, caret performs 10-fold cross validation, and then reports the best model and estimated coefficients. All of this is abstracted from the user and makes for some very clean and readable code.
+
+```{r Lasso}
+# Lasso
+lasso_lambda <- seq(0, 1, length = 100)
+train_control <- trainControl(method = "cv", number = 10)
+
+lasso_caret <- train(
+  lprice ~., 
+  data = train1.2,
+  method = "glmnet",
+  trControl = train_control,
+  tuneGrid = expand.grid(alpha = 1, lambda = lasso_lambda)
+)
+
+# Best model summary information
+## Best Lambda
+lasso_caret$bestTune$lambda
+
+## Lambda versus RMSE
+plot(lasso_caret$results$lambda, lasso_caret$results$RMSE,
+     xlab = "Lambda", ylab = "RMSE", main = "RMSE versus Lambda (Lasso)",
+     xlim = c(0, 0.2))
+
+## Best Ridge Model Coefficients
+sum(coef(lasso_caret$finalModel, lasso_caret$bestTune$lambda) != 0)
+```
+
+As you can see from the above output, Lasso reduced the number of parameters from 273 to 14! This is a tremendous gain for 
+
+## Ridge
+Ridge is very similar to lasso, except it will not shrink coefficients to zero. I am going to employ the same selection process as Lasso.
+
+```{r Ridge}
+# Ridge Regression
+ridge_lambda <- seq(0.25, 1, length = 100)
+
+ridge_caret <- train(
+  lprice ~., 
+  data = train1.2,
+  method = "glmnet",
+  trControl = train_control,
+  tuneGrid = expand.grid(alpha = 0, lambda = ridge_lambda)
+)
+
+summary(train1_rl$SalePrice); summary(test_df$SalePrice)
+
+# Best model summary information
+## Best Lambda
+ridge_caret$bestTune$lambda
+
+## Lambda versus RMSE
+plot(ridge_caret$results$lambda, ridge_caret$results$RMSE,
+     xlab = "Lambda", ylab = "RMSE", main = "RMSE versus Lambda (Ridge)")
+
+## Best Ridge Model Coefficients
+sum(coef(ridge_caret$finalModel, ridge_caret$bestTune$lambda) != 0)
+```
+
+```{r}
+# Cleaning up the test dataframe
+test1_features <- test1_features %>%
+  mutate(MSSubClass = factor(MSSubClass),
+         Alley = fct.relevel(Alley),
+         BsmtQual = fct.relevel(BsmtQual),
+         BsmtCond = fct.relevel(BsmtCond),
+         BsmtExposure = fct.relevel(BsmtExposure),
+         BsmtFinType1 = fct.relevel(BsmtFinType1),
+         BsmtFinType2 = fct.relevel(BsmtFinType2),
+         FireplaceQu = fct.relevel(FireplaceQu),
+         GarageType = fct.relevel(GarageType),
+         GarageFinish = fct.relevel(GarageFinish),
+         GarageCond = fct.relevel(GarageCond),
+         GarageQual = fct.relevel(GarageQual),
+         PoolQC = fct.relevel(PoolQC),
+         Fence = fct.relevel(Fence),
+         MiscFeature = fct.relevel(MiscFeature),
+         LotFrontage = ifelse(is.na(LotFrontage), median(LotFrontage, na.rm = T), 
+                              LotFrontage)) %>%
+  filter(MSSubClass != "150")
+
+head(test_df[, c(1,2)], 80) head(test_target, 80) 
+
+test_df <- left_join(test_target, test1_features, by = "Id") %>% 
+  drop_na()
+
+# Making Predictions
+lasso_preds <- predict(lasso_caret, test_df)
+ridge_preds <- predict(ridge_caret, test_df)
+
+# Calculating MSE
+rmse_lasso <- sqrt(mean((exp(lasso_preds) - test_df$SalePrice)^2))
+rmse_ridge <- sqrt(mean((exp(ridge_preds) - test_df$SalePrice)^2))
+rmse1 <- matrix(cbind(rmse_lasso, rmse_ridge), dimnames = list(c("Lasso", "Ridge"), "RMSE"))
+
+sqrt(mean((mean(train1_rl$SalePrice) - test_df$SalePrice)^2)); rmse_lasso
+
+sqrt(mean((mean(train1_rl$SalePrice) - train1_rl$SalePrice)^2))
+
+ols_test <- lm(SalePrice ~., data = train1_rl)
+summary(ols_test)
+sqrt(mean((ols_test$residuals)^2))
+
+rmse1
+```
+
+Lasso regression has a slightly lower RMSE than ridge. Additionally, Lasso produced a more parsimonious model, shrinking the predictor space down to only 63 features. It is important to note that it is not necessary to evaluate ordinary least squares when looking at MSE. Since the grid search started with a lambda value of 0, ordinary least squares was evaluated during cross-validation. If OLS produced a model with the lowest MSE, it would have been selected at that stage, and does not need to be reconsidered now. However, the lambda values selected by the caret::train function are different than those determined by the glmnet::cv.glmnet function. After some manipulation, I found that larger values of lambda decreased the prediction error, and the final stage of that output is shown below.
+
+```{r Lambda Tuning}
+# Lasso
+lasso_tune_lambda <- seq(0.5, 0.7, length = 10)
+
+lasso_caret_tune <- train(
+  lprice ~., 
+  data = train1.2,
+  method = "glmnet",
+  trControl = train_control,
+  tuneGrid = expand.grid(alpha = 1, lambda = lasso_tune_lambda)
+)
+
+## Best Lambda and Number of Predictors
+lasso_caret_tune$bestTune$lambda
+sum(coef(lasso_caret_tune$finalModel, lasso_caret_tune$bestTune$lambda) != 0)
+
+# Ridge Regression
+ridge_lambda_tune <- seq(0.3, 0.4, length = 10)
+
+ridge_caret_tune <- train(
+  lprice ~., 
+  data = train1.2,
+  method = "glmnet",
+  trControl = train_control,
+  tuneGrid = expand.grid(alpha = 0, lambda = ridge_lambda_tune)
+)
+
+## Best Lambda and Number of Predictors
+ridge_caret_tune$bestTune$lambda
+sum(coef(ridge_caret_tune$finalModel, ridge_caret_tune$bestTune$lambda) != 0)
+
+# Making Predictions
+lasso_preds_tune <- predict(lasso_caret_tune, test_df)
+ridge_preds_tune <- predict(ridge_caret_tune, test_df)
+
+# Calculating MSE
+rmse_lasso_tune <- mean(sqrt((exp(lasso_preds_tune) - test_df$SalePrice)^2))
+rmse_ridge_tune <- mean(sqrt((exp(ridge_preds_tune) - test_df$SalePrice)^2))
+mse1_tune <- matrix(cbind(rmse_lasso_tune, rmse_ridge_tune), dimnames = list(c("Lasso", "Ridge"), "RMSE"))
+
+mse1_tune
+
+mean(sqrt((mean(exp(train1.2$lprice)) - test_df$SalePrice)^2))
+```
+ 
+```{r}
+lasso_train_pred <- predict(lasso_caret, train1.2)
+```
+ 
+# Problem 2
+
+```{r}
+# Reading Data
+train2 <- read.delim("~/Documents/624/Midterm Project/train_GE_LW.txt")
+test2 <- read.delim("~/Documents/624/Midterm Project/test_GE_LW.txt")
+
+dim(train2)
+dim(test2)
+
+head(train2)
+head(test2)
+
+str(train2$COS.Intensity)
+str(test2)
+
+train2 <- train2 %>%
+  mutate(COS.Intensity = fct_relevel(COS.Intensity, c("SED", "LPA", "MPA", "VPA")))
+test2 <- test2 %>%
+  mutate(COS.Intensity = fct_relevel(COS.Intensity, c("SED", "LPA", "MPA", "VPA")))
+```
+
+For this part of the project, I am assuming the user of the model has an interest in classifying physical activity into the four levels. Thus, I am not going to group levels of COS.Intensity. 
+
+## Exploratory Data Analysis
+
+```{r EDA 2}
+summary(test2)
+
+test2 %>% dplyr::select(mean.GE_LW_X, mean.GE_LW_Y, mean.GE_LW_Z) %>% ggpairs()
+test2 %>% dplyr::select(var.GE_LW_X, var.GE_LW_Y, var.GE_LW_Z) %>% ggpairs()
+test2 %>% dplyr::select(max.GE_LW_X, max.GE_LW_Y, max.GE_LW_Z) %>% ggpairs()
+test2 %>% dplyr::select(quarlite.GE_LW_X80, quarlite.GE_LW_Y80, quarlite.GE_LW_Z80) %>% ggpairs()
+
+test2 %>% dplyr::select(-25, -29) %>% cor()
+
+table(test2$COS.Intensity)
+table(test2$Sex)
+
+train2 %>%
+  group_by(COS.Intensity) %>%
+  drop_na() %>%
+  dplyr::select(-Sex) %>%
+  summarize_all(mean)
+
+train2 %>%
+  group_by(COS.Intensity) %>%
+  drop_na() %>%
+  dplyr::select(-Sex) %>%
+  summarize_all(sd)
+
+?summarize_all
+```
+
+Looking at the results of the EDA, the main problem with this data is collinearity. This won't be an issue for KNN, LDA, and QDA, but will pose substantial challenges for logistic regression. 
+
+## KNN
+
+There are two methods of scaling that can be used for KNN. I am going to first try scaling and then normalization.
+
+```{r KNN}
+# Creating the training and test dataframes
+train2.1 <- scale(train2[, c(-25, -29)]) %>%
+  cbind(train2[, c(25, 29)]) %>%
+  mutate(Sex = ifelse(as.character(Sex) == "Female", 0, 1))  %>%
+  drop_na()
+  
+
+test2.1 <- scale(test2[, c(-25, -29)]) %>%
+  cbind(test2[, c(25, 29)]) %>%
+  mutate(Sex = ifelse(as.character(Sex) == "Female", 0, 1))
+
+#summary(train2.1)
+#summary(test2.1)
+#dim(train2.1)
+#dim(test2.1)
+
+# Separating features and targets
+train2.1_features <- train2.1[, -29]
+train2.1_target <- train2.1[, 29]
+
+test2.1_features <- test2.1[,-29]
+test2.1_target <- test2.1[,29]
+
+# Clustering
+k <- round(sqrt(nrow(train2.1))) - 1 
+
+model2.1 <- knn(train2.1_features, test2.1_features, train2.1_target, k)
+
+# Examining results
+confusionMatrix(model2.1, test2.1_target)
+```
+
+Looking at the accuracy rates and kappa statistic, this model has moderate performance. I am going to employ regularization to see if it improves accuracy.
+
+```{r}
+normalize <- function(x){
+  return((x - min(x)) / (max(x) - min(x)))
+}
+
+# Creating the training and test dataframes
+train2.2 <- lapply(train2[, c(-25, -29)], normalize) %>%
+  cbind(train2[, c(25, 29)]) %>%
+  mutate(Sex = ifelse(as.character(Sex) == "Female", 0, 1)) %>%
+  drop_na()
+   
+
+test2.2 <- lapply(test2[, c(-25, -29)], normalize) %>%
+  cbind(test2[, c(25, 29)]) %>%
+  mutate(Sex = ifelse(as.character(Sex) == "Female", 0, 1))
+
+#summary(train2.2)
+#summary(test2.2)
+#dim(train2.2)
+#dim(test2.2)
+
+# Separating features and targets
+train2.2_features <- train2.2[, -29]
+train2.2_target <- train2.2[, 29]
+
+test2.2_features <- test2.2[,-29]
+test2.2_target <- test2.2[,29]
+
+# Clustering
+k <- round(sqrt(nrow(train2.2))) - 1 
+
+model2.2 <- knn(train2.2_features, test2.2_features, train2.2_target, k)
+
+# Examining results
+confusionMatrix(model2.2, test2.2_target)
+```
+
+The normalized data performed worse in this case; I will use the centered and scaled data. One additional consideration is tuning the k parameter. The models are currently built using a heuristic for k, so I am going to perform a search.
+
+### Tuning k
+
+```{r}
+# Centered and Scaled Data
+k_tune <- seq(from = 3, to = 199, by = 2)
+sum((k_tune %/% 2) == 0)
+tune2.1_kappa <- rep(NA, length(k_tune))
+tune2.1_acc <- rep(NA, length(k_tune))
+
+for(i in 1:length(k_tune)){
+  model <- knn(train2.1_features, test2.1_features, train2.1_target, k_tune[i])
+  tune2.1_acc[i] <- confusionMatrix(model, test2.1_target)$overall[1]
+  tune2.1_kappa[i] <- confusionMatrix(model, test2.1_target)$overall[2]
+}
+
+# Normalized data
+tune2.2_kappa <- rep(NA, length(k_tune))
+tune2.2_acc <- rep(NA, length(k_tune))
+
+for(i in 1:length(k_tune)){
+  model <- knn(train2.2_features, test2.2_features, train2.2_target, k_tune[i])
+  tune2.2_acc[i] <- confusionMatrix(model, test2.2_target)$overall[1]
+  tune2.2_kappa[i] <- confusionMatrix(model, test2.2_target)$overall[2]
+}
+
+tune2.1_kappa[which.max(tune2.1_kappa)]
+
+# Best K's
+max_2.1 <- which.max(tune2.1_kappa)
+max_2.2 <- which.max(tune2.2_kappa)
+
+# Alignment between Kappa and Accuracy
+which.max(tune2.1_acc) == max_2.1
+
+k_tune[max_2.1]; k_tune[max_2.2]
+tune2.1_kappa[max_2.1]; tune2.2_kappa[max_2.2]
+```
+Looking at the above output, the centered and scaled data systematically performs better. I am going to plot the statistics to understand the tuning process better.
+
+```{r}
+# Plotting Kappa
+plot_df_kappa <- cbind(k_tune, tune2.1_kappa, tune2.2_kappa) %>% 
+  as.tibble() %>%
+  gather(key = "Model", value = "Kappa", tune2.1_kappa, tune2.2_kappa) %>%
+  mutate(Model = factor(ifelse(Model == "tune2.1_kappa", "2.1", "2.2")))
+
+ggplot(plot_df_kappa, aes(x = k_tune, y = Kappa, color = Model)) + 
+  geom_line() +
+  geom_vline(xintercept = 87)
+
+# Plotting Accuracy
+plot_df_acc <- cbind(k_tune, tune2.1_acc, tune2.2_acc) %>% 
+  as.tibble() %>%
+  gather(key = "Model", value = "Accuracy", tune2.1_acc, tune2.2_acc) %>%
+  mutate(Model = factor(ifelse(Model == "tune2.1_acc", "2.1", "2.2")))
+
+ggplot(plot_df_acc, aes(x = k_tune, y = Accuracy, color = Model)) + 
+  geom_line()
+
+left_join(plot_df_kappa, plot_df_acc, by = c("k_tune", "Model"))[c(6, 43),]
+```
+
+Looking at the plot, centered and scaled data systematically performs better. This model performs best when the algorithm considers 87 of its nearest neighbors (Kappa = 0.4205). However, considering only 13 nearest neighbors, one is able to achieve a similar level of accuracy (Kappa = 0.4183). Additionally, the heuristic suggests a value of 65. The performance of the model at 65 is not terrible, but definitely not the optimal. This demonstrates the importance of model tuning and the downfalls of heuristic guides.
+
+## Linear Discriminant Analysis
+
+```{r}
+# Training the LDA model
+lda2 <- lda(COS.Intensity ~., data = train2)
+plot(lda2)
+
+lda2_preds <- predict(lda2, test2)
+
+confusionMatrix(lda2_preds$class, test2$COS.Intensity)
+```
+
+The LDA model performs similarly to the KNN model. LDA doesn't require much tuning aside from data pre-processing. So, I am taking the output essentially as-is.
+
+## Quadratic Discriminant Analysis
+
+```{r}
+qda2 <- qda(COS.Intensity ~., data = test2)
+
+qda2_preds <- predict(qda2, data = test2)
+
+confusionMatrix(qda2_preds$class, test2$COS.Intensity)
+```
+
+QDA performs the best out of all available models up to this point. It is a pretty accurate model (Acc = 0.6559), and it has fair discretion over discerning cases from just chance (Kappa = 0.4887). Given the output of this model, I would put this model into production.
+
+## Multinomial Regression
+
+I am favoring multinomial regression in this case because it allows comparison to the previous models.
+
+```{r}
+mnr2 <- multinom(COS.Intensity ~., data = train2)
+summary(mnr2)
+
+mnr2_preds <- predict(mnr2, type = "class", newdata = test2)
+
+confusionMatrix(mnr2_preds, test2$COS.Intensity)
+```
+
+
+From the above output, it appears multinomial regression does not offer and advantages over the other models being considered.
+
+## Conclusion
+The best model for classifying physical activity into 4 categories is Quadratic Discriminant Analysis since it has the highest accuracy and largest Kappa statistic. QDA assumes different means and variances across the classes of interest. It makes intuitive sense as to why it would perform the best: the means for activity levels are clearly different, and the variance is also likely to be different. To illustrate this point, consider jogging at a moderate pace and sprinting. Jogging would require an average level of movement less than sprinting, but the average may not be substantially so. However, the variation of movement will be far less during jogging than during sprinting (think of how much more your legs move), which will clearly separate the categories. The summary values below support this claim.
+
+```{r}
+# Means
+train2 %>%
+  drop_na() %>%
+  group_by(COS.Intensity) %>%
+  dplyr::select(COS.Intensity, var.GE_LW_X, var.GE_LW_Y, var.GE_LW_Z) %>%
+  summarize_all(mean)
+
+# Standard deviations
+train2 %>%
+  drop_na() %>%
+  group_by(COS.Intensity) %>%
+  dplyr::select(COS.Intensity, var.GE_LW_X, var.GE_LW_Y, var.GE_LW_Z) %>%
+  summarize_all(sd)
+```
+
+
+
+
+
+
+
+
+
