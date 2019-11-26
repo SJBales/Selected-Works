@@ -11,4 +11,4 @@ Regularization_and_Classification.rmd is the code used to generate the pdf.
 Regularization_for_Portfolio_Selection.docx is a paper I wrote explaining the use of novel penalty terms for selecting optimal weights 
 of stocks in a portfolio.
 
-ols_sim.R is an RScript that contains the code I used to conduct a simulation study for my thesis on a Beowulf cluster.
+new_sims.R is an RScript that contains the code I used to conduct a simulation study for my thesis on a Beowulf cluster.
