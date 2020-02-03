@@ -9,6 +9,8 @@ This repository contains selected code I have written for my thesis, class proje
 - Regularization_and_Classification.rmd is an RMarkdown containing the work for a recent midterm project using regularization and classification methods.
 - Regularization_for_Portfolio_Selection.pdf is a paper I wrote explaining the use of novel penalty terms for selecting optimal weights 
 of stocks in a portfolio.
+- Final_Analysis.rmd contains the code used for a final project.
+- Final_Analysis.pdf is the final report for a machine learning course.
 
 # Thesis
 - new_sims.R is an RScript that contains the code I used to conduct a simulation study for my thesis on a Beowulf cluster.
