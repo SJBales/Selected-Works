@@ -1,0 +1,281 @@
+---
+title: "Analysis"
+output: pdf_document
+---
+
+```{r, include=F}
+library(tidyverse)
+library(amap)
+library(ggfortify)
+library(class)
+library(caret)
+library(e1071)
+library(randomForest)
+library(C50)
+set.seed(12345)
+```
+
+# Setup and Reading Data
+
+```{r Setup}
+# Reading Data
+reviews <- read.csv("google_review_ratings.csv")
+
+# Function
+fact.to.num <- function(x){return(as.numeric(as.character(x)))}
+
+# Formatting
+reviews_clean <- reviews %>%
+  mutate(Category.11 = fact.to.num(Category.11)) %>%
+  dplyr::select(-X) %>%
+  drop_na() %>%
+  dplyr::rename(churches = Category.1,
+                resorts = Category.2,
+                beaches = Category.3,
+                parks = Category.4,
+                theatres = Category.5,
+                museums = Category.6,
+                malls = Category.7,
+                zoos = Category.8,
+                restaurants = Category.9,
+                bars = Category.10,
+                loc_services = Category.11,
+                burger_pizza = Category.12,
+                hotels = Category.13,
+                juice = Category.14,
+                art = Category.15,
+                dance = Category.16,
+                swim = Category.17,
+                gyms = Category.18,
+                bakeries = Category.19,
+                beauty = Category.20,
+                cafe = Category.21,
+                viewing = Category.22,
+                monuments = Category.23,
+                gardens = Category.24)
+```
+
+# EDA
+```{r EDA}
+# Plotting object
+p <- sample_n(reviews_clean, 1000) %>% ggplot()
+
+# Univariate
+p + geom_histogram(aes(x = beaches), binwidth = 0.1) + 
+  ggtitle("Beach Reviews") +
+  xlab("Beach Reviews")
+p + geom_boxplot(aes(y = swim)) +
+  ggtitle("Swimming") 
+
+# Bivariate
+p + geom_jitter(aes(x = juice, y = gyms), alpha = 0.2) +
+  ggtitle("Juice vs. Gyms") 
+p + geom_jitter(aes(x = bars, y = dance), alpha = 0.2)
+p + geom_jitter(aes(x = bakeries, y = cafe), alpha = 0.2)
+p + geom_jitter(aes(x = parks, y = monuments), alpha = 0.2)
+```
+
+# PCA
+
+```{r PCA}
+pca_df <- reviews_clean %>% dplyr::select(-User)
+summary(pca_df)
+
+# PCA
+pca <- prcomp(pca_df)
+
+# Examining centering and scaling
+pca_df %>%
+  scale(center = T, scale = T) %>%
+  as.tibble() %>%
+  summarise_all(.funs = c(mean, median, sd)) %>%
+  matrix(ncol = 3, dimnames = list(NULL, c("Mean", "Median", "SD")))
+
+## Percent of Variation Explained
+var_ex <- pca$sdev / sum(pca$sdev)
+par(mfrow =c(1, 2))
+plot(var_ex, type = "l", lwd = 2)
+plot(cumsum(var_ex), type = "l", lwd = 2)
+biplot(pca)
+
+# PCA with centering and scaling
+pca2 <- prcomp(pca_df, center = T, scale. = T)
+
+## Percent of Variation Explained
+var_ex2 <- pca2$sdev / sum(pca2$sdev)
+par(mfrow =c(1, 2))
+plot(var_ex2, type = "l", lwd = 2)
+plot(cumsum(var_ex2), type = "l", lwd = 2)
+autoplot(pca2, loadings = T, loadings.colour = 'green', loadings.label = T, loadings.label.colour = 'red')
+```
+
+I don't think centering and scaling is necessary for this data since the reviews are on a 0 to 5 scale with similar means and variances. Additionally, it appears there are five groups of amenities that have similar characteristics. This is great information ahead of time.
+
+# Clustering
+
+## Hierarchical
+
+```{r Hierarchical}
+# Euclidean Distance and Complete linkage
+eu_dist_mat <- dist(pca_df)
+h_cluster1 <- hclust(eu_dist_mat)
+plot(h_cluster1)
+
+# Euclidean Distance and Average Linkage
+h_cluster2 <- hclust(eu_dist_mat, method = "average")
+plot(h_cluster2)
+
+# Euclidean Distance and Single Linkage
+h_cluster3 <- hclust(eu_dist_mat, method = "single")
+plot(h_cluster3)
+
+# Pearson Distance and Complete Linkage
+pear_dist_mat <- Dist(pca_df, method = "pearson")
+h_cluster4 <- hclust(pear_dist_mat, method = "complete")
+plot(h_cluster4)
+
+# Pearson Distance and Average Linkage
+h_cluster5 <- hclust(pear_dist_mat, method = "average")
+plot(h_cluster5)
+
+# Pearson Distance and Single Linkage
+h_cluster6 <- hclust(pear_dist_mat, method = "single")
+plot(h_cluster6)
+
+# Manhattan Distance and Complete Linkage
+man_dist_mat <- Dist(pca_df, method = "manhattan")
+h_cluster7 <- hclust(man_dist_mat, method = "complete")
+plot(h_cluster7)
+
+# Manhattan Distance and Average Linkage
+h_cluster8 <- hclust(man_dist_mat, method = "average")
+plot(h_cluster8)
+
+# Manhattan Distance and Single Linkage
+h_cluster9 <- hclust(man_dist_mat, method = "single")
+plot(h_cluster9)
+
+# 2 classes
+two_hc <- cutree(h_cluster, k = 5)
+data.frame(clust = two_hc, pca_df) %>%
+  group_by(clust) %>%
+  summarize_all(.funs = mean)
+```
+
+## K-means
+
+```{r K-means}
+within_ssq <- c()
+between_ssq <- c()
+centers <- c(1:30)
+
+# Euclidean Distance
+for(c in 1:length(centers)){
+  km <- kmeans(pca_df, centers = centers[c], nstart = 10)
+  within_ssq[c] <- km$tot.withinss
+  between_ssq[c] <- km$betweenss
+}
+
+plot(within_ssq, xlab = "Clusters", type = "l", lwd = 2, col = "blue")
+par(new = T)
+plot(between_ssq, type = "l", xlab = NA, ylab = NA, 
+     axes = F, lwd = 2, col = "red")
+axis(side = 4)
+abline(v = 6, col = "green", lwd = 2)
+abline(v = 5, col = "orange", lwd = 2)
+```
+
+```{r New Data}
+final_kmeans <- kmeans(pca_df, centers = 5, nstart = 50)
+
+output_df <- data.frame(cluster = factor(final_kmeans$cluster), pca_df)
+#write.csv(output_df, file = "~/Downloads/Final Project_624/new_data.csv")
+```
+
+# Classification
+
+## KNN
+
+```{r KNN}
+# Ten fold CV to find the optimal number of neighbors
+tr_control <- trainControl(method = "cv", number = 10)
+nearest <- train(x = pca_df, 
+                 y = final_kmeans$cluster, 
+                 method = "knn",
+                 metric = "Kappa",
+                 trControl = tr_control,
+                 tuneLength = 200)
+
+# Plotting Kappa
+nearest$results %>%
+  ggplot() +
+  geom_line(aes(x = k, y = Kappa)) +
+  geom_vline(xintercept = 5, colour = 'red') + 
+  ggtitle("K versus Kappa")
+
+# Examining Results
+nearest$finalModel
+
+# Investigation
+nearest$results %>%
+  dplyr::filter(k > 20) %>%
+  dplyr::filter(Kappa == max(Kappa))
+
+# New neighbors
+nearest$results %>%
+  dplyr::filter(k > 20) %>%
+  ggplot() +
+  geom_line(aes(x = k, y = Kappa))
+
+# Metrics
+tr_indices <- sample(nrow(output_df), 4000)
+train <- output_df[tr_indices,]
+test <- output_df[-tr_indices,]
+final_knn <- knn(train[,-1], test[,-1], train[,1], k = 229)
+
+confusionMatrix(final_knn, reference = test[,1])
+```
+
+## Trees
+
+```{r Trees}
+# Bagging
+bagged_tree <- randomForest(formula = factor(cluster) ~., data = train,  mtry = 24, ntree = 500)
+bag_preds <- predict(bagged_tree, test)
+confusionMatrix(bag_preds, reference = test[, 1])
+
+output_df <- output_df %>%
+  mutate(cluster = factor(cluster)) %>%
+  dplyr::select(-X)
+
+str(output_df)
+
+bag <- train(x = output_df[,-1], y = output_df[, 1], 
+            method = 'rf', metric = "Kappa", trControl = rf_tc)
+
+bag$finalModel
+
+str(bag)
+
+# Random Forest
+#rf_grid <- expand.grid(mtry = c(2, 7, 9, 13, 15, 17, 19, 21, 23))
+#rf_tc <- trainControl(method = 'cv', number = 10, search = 'grid')
+
+rf <- train(x = output_df[,-1], y = output_df[, 1], 
+            method = 'rf', metric = "Kappa",
+            trControl = rf_tc,
+            tuneGrid = rf_grid)
+load("random_forest.rda")
+
+rf$finalModel
+str(rf)
+```
+
+```{r}
+classes <- read.csv("new_data.csv")
+
+classes %>%
+  group_by(cluster) %>%
+  summarize_all(.funs = mean)
+```
+
