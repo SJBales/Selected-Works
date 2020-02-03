@@ -1,5 +1,5 @@
 # Selected-Works
-This repository contains selected code I have written for my thesis, class projects, and academic research. /Pay_Ratio folder contains code written to extract, format, and analyze Pay Ratio information from company 10-K's. /Thesis contains the code used to conduct a simulation study of predictor envelope dimension selection criteria, as well as the currently being used to write the paper. /Class
+This repository contains selected code I have written for my thesis, class projects, and academic research. /Pay_Ratio folder contains code written to extract, format, and analyze Pay Ratio information from company 10-K's. /Thesis contains the code used to conduct a simulation study of predictor envelope dimension selection criteria, as well as the currently being used to write the paper. /Class_Projects contains code and papers from class projects that demonstrate a breadth of statistical and machine learning techniques.
 
 ## Pay_Ratio
 - Extraction & Export.rmd is an RMarkdown file that I used to extract pay ratio information from company proxy filings.
